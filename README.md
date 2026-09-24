@@ -5,6 +5,8 @@
 用一个本地小模型（Kev-4B）对每个请求实时判断「这次该用多少思考预算」，
 把判定注入后端请求后转发。目标：简单任务少想、复杂任务多想，省算力而不牺牲质量。
 
+![reasoning-gate 拓扑](topology.png)
+
 ```
 client (Hermes chat_completions / Codex responses)
         │
@@ -91,9 +93,9 @@ requires_openai_auth = false
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `KEV_URL` | `http://192.168.8.80:8905/v1/systemone` | Kev-4B 决策服务地址 |
-| `BACKEND_CHAT` | `http://192.168.8.89:8731/v1/chat/completions` | 后端 chat 端点 |
-| `BACKEND_RESP` | `http://192.168.8.89:8731/v1/responses` | 后端 responses 端点 |
+| `KEV_URL` | `http://192.168.1.10:8905/v1/systemone` | Kev-4B 决策服务地址 |
+| `BACKEND_CHAT` | `http://192.168.1.20:8731/v1/chat/completions` | 后端 chat 端点 |
+| `BACKEND_RESP` | `http://192.168.1.20:8731/v1/responses` | 后端 responses 端点 |
 | `BACKEND_MODEL` | `halogen-qwen3.8-flash-next` | 转发给后端的真实模型名 |
 | `KEV_DEFAULT_EFFORT` | `medium` | 无客户端 effort 时的兜底 |
 | `KEV_LOG` | `~/.hermes/kev-proxy/decisions.jsonl` | 决策审计日志路径 |

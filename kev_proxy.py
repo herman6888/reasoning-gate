@@ -14,9 +14,9 @@ Features:
 import json, os, sys, time, threading, hashlib, re, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-KEV_URL = os.environ.get("KEV_URL", "http://192.168.8.80:8904/v1/systemone")
-BACKEND_CHAT = os.environ.get("BACKEND_CHAT", "http://192.168.8.89:8731/v1/chat/completions")
-BACKEND_RESP = os.environ.get("BACKEND_RESP", "http://192.168.8.89:8731/v1/responses")
+KEV_URL = os.environ.get("KEV_URL", "http://192.168.1.10:8905/v1/systemone")
+BACKEND_CHAT = os.environ.get("BACKEND_CHAT", "http://192.168.1.20:8731/v1/chat/completions")
+BACKEND_RESP = os.environ.get("BACKEND_RESP", "http://192.168.1.20:8731/v1/responses")
 BACKEND_MODEL = os.environ.get("BACKEND_MODEL", "halogen-qwen3.8-flash-next")
 DEFAULT_EFFORT = os.environ.get("KEV_DEFAULT_EFFORT", "medium")
 LOG_PATH = os.environ.get("KEV_LOG", os.path.expanduser("~/.hermes/kev-proxy/decisions.jsonl"))
