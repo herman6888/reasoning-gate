@@ -1,0 +1,16 @@
+[Unit]
+Description=Kev-4B effort decision proxy (OpenAI-compatible middle layer)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/kev-proxy
+Environment=KEV_URL=http://192.168.8.80:8905/v1/systemone
+Environment=KEV_LOG=%h/.hermes/kev-proxy/decisions.jsonl
+Environment=KEV_PROXY_PORT=8910
+ExecStart=/usr/bin/python3 %h/Projects/kev-proxy/kev_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
