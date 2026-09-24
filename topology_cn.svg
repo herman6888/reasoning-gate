@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="580" viewBox="0 0 1000 580" font-family="'Noto Sans CJK SC','PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="580" fill="#ffffff"/>
+
+  <rect x="40" y="90" width="150" height="56" fill="none" stroke="#334155" stroke-width="1.4"/>
+  <text x="115" y="115" fill="#0f172a" font-size="16" text-anchor="middle">Hermes</text>
+  <text x="115" y="134" fill="#64748b" font-size="11" text-anchor="middle" font-family="monospace">chat_completions</text>
+
+  <rect x="40" y="180" width="150" height="56" fill="none" stroke="#334155" stroke-width="1.4"/>
+  <text x="115" y="205" fill="#0f172a" font-size="16" text-anchor="middle">Codex</text>
+  <text x="115" y="224" fill="#64748b" font-size="11" text-anchor="middle" font-family="monospace">responses</text>
+
+  <rect x="330" y="80" width="220" height="166" fill="#f1f5f9" stroke="#2563eb" stroke-width="1.6"/>
+  <text x="440" y="108" fill="#1e3a8a" font-size="17" font-weight="bold" text-anchor="middle">reasoning-gate</text>
+  <text x="440" y="127" fill="#2563eb" font-size="11" text-anchor="middle" font-family="monospace">:8910</text>
+  <line x1="350" y1="140" x2="530" y2="140" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="350" y="162" fill="#334155" font-size="12.5">剥系统包装</text>
+  <text x="350" y="184" fill="#334155" font-size="12.5">lease 缓存</text>
+  <text x="350" y="206" fill="#334155" font-size="12.5">none 置信度护栏</text>
+  <text x="350" y="228" fill="#334155" font-size="12.5">fail-open 兜底</text>
+
+  <rect x="700" y="70" width="250" height="86" fill="none" stroke="#15803d" stroke-width="1.4"/>
+  <text x="825" y="96" fill="#14532d" font-size="15" text-anchor="middle">Kev-4B 决策服务</text>
+  <text x="825" y="116" fill="#166534" font-size="11" text-anchor="middle" font-family="monospace">192.168.1.10:8905</text>
+  <text x="825" y="136" fill="#4b5563" font-size="11" text-anchor="middle">/v1/systemone · Q8_0 GPU</text>
+
+  <rect x="700" y="210" width="250" height="86" fill="none" stroke="#7c3aed" stroke-width="1.4"/>
+  <text x="825" y="236" fill="#4c1d95" font-size="15" text-anchor="middle">推理后端 (halogen)</text>
+  <text x="825" y="256" fill="#5b21b6" font-size="11" text-anchor="middle" font-family="monospace">192.168.1.20:8731</text>
+  <text x="825" y="276" fill="#4b5563" font-size="11" text-anchor="middle">接受 reasoning_effort 注入</text>
+
+  <line x1="190" y1="118" x2="328" y2="150" stroke="#334155" stroke-width="1.3" marker-end="url(#a)"/>
+  <line x1="190" y1="208" x2="328" y2="180" stroke="#334155" stroke-width="1.3" marker-end="url(#a)"/>
+
+  <line x1="550" y1="110" x2="698" y2="108" stroke="#15803d" stroke-width="1.3" marker-end="url(#a)"/>
+  <text x="624" y="100" fill="#15803d" font-size="11" text-anchor="middle">问 effort</text>
+  <line x1="698" y1="135" x2="552" y2="138" stroke="#15803d" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="624" y="152" fill="#15803d" font-size="11" text-anchor="middle">effort + lease</text>
+
+  <line x1="550" y1="210" x2="698" y2="240" stroke="#7c3aed" stroke-width="1.3" marker-end="url(#a)"/>
+  <text x="624" y="218" fill="#7c3aed" font-size="11" text-anchor="middle">注入 effort 转发</text>
+  <line x1="698" y1="275" x2="552" y2="245" stroke="#7c3aed" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#a)"/>
+  <text x="624" y="272" fill="#64748b" font-size="11" text-anchor="middle">回传</text>
+
+  <text x="40" y="360" fill="#334155" font-size="13">lease 命中时跳过决策，直接转发（夜间实测约 69% 请求零决策开销）。</text>
+  <text x="40" y="384" fill="#334155" font-size="13">Kev 不可用时 fail-open，保持客户端默认 effort，请求不中断。</text>
+  <text x="40" y="408" fill="#94a3b8" font-size="12">IP 为占位地址，实际部署经环境变量配置。</text>
+
+  <text x="40" y="448" fill="#0f172a" font-size="14" font-weight="bold">夜间 cron 实测（3 个可比任务；基线 = 9/20–9/23 halogen 均值）</text>
+  <line x1="40" y1="460" x2="960" y2="460" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="40"  y="482" fill="#475569" font-size="12" font-weight="bold">任务</text>
+  <text x="250" y="482" fill="#475569" font-size="12" font-weight="bold">墙钟 基线→kev</text>
+  <text x="470" y="482" fill="#475569" font-size="12" font-weight="bold">节省</text>
+  <text x="590" y="482" fill="#475569" font-size="12" font-weight="bold">输出 token 基线→kev</text>
+  <text x="880" y="482" fill="#475569" font-size="12" font-weight="bold">节省</text>
+  <line x1="40" y1="490" x2="960" y2="490" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40"  y="512" fill="#334155" font-size="12.5">Strix Halo 摘要</text>
+  <text x="250" y="512" fill="#334155" font-size="12.5" font-family="monospace">826 -&gt; 210 s</text>
+  <text x="470" y="512" fill="#15803d" font-size="12.5" font-family="monospace">-75%</text>
+  <text x="590" y="512" fill="#334155" font-size="12.5" font-family="monospace">7262 -&gt; 3021</text>
+  <text x="880" y="512" fill="#15803d" font-size="12.5" font-family="monospace">-58%</text>
+  <text x="40"  y="534" fill="#334155" font-size="12.5">广州天气日报</text>
+  <text x="250" y="534" fill="#334155" font-size="12.5" font-family="monospace">159 -&gt; 105 s</text>
+  <text x="470" y="534" fill="#15803d" font-size="12.5" font-family="monospace">-34%</text>
+  <text x="590" y="534" fill="#334155" font-size="12.5" font-family="monospace">2190 -&gt; 1834</text>
+  <text x="880" y="534" fill="#15803d" font-size="12.5" font-family="monospace">-16%</text>
+  <text x="40"  y="556" fill="#334155" font-size="12.5">AI 新闻简报</text>
+  <text x="250" y="556" fill="#334155" font-size="12.5" font-family="monospace">914 -&gt; 563 s</text>
+  <text x="470" y="556" fill="#15803d" font-size="12.5" font-family="monospace">-38%</text>
+  <text x="590" y="556" fill="#334155" font-size="12.5" font-family="monospace">15016 -&gt; 14740</text>
+  <text x="880" y="556" fill="#15803d" font-size="12.5" font-family="monospace">-2%</text>
+</svg>
