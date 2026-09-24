@@ -141,7 +141,16 @@ lease = Lease()
 LEASE_CAP = int(os.environ.get("KEV_LEASE_CAP", "5"))  # night run showed lease=10 too aggressive (none rode 5 gens)
 NONE_MIN_CONF = float(os.environ.get("KEV_NONE_MIN_CONF", "0.55"))  # 'none' (zero-think) needs higher confidence
 
+def truncate_state(state, head=500, tail=1500):
+    # Night run: kev_ms tracks state length (r=0.90); median state 5.3k chars -> 4.6s/decision.
+    # GPU 1.5k state = ~0.9s. Hard-signal lives in the tail (verified: easy-8k + hard-tail
+    # still bumps minimal->low), so keep the task head + the latest context, elide the middle.
+    if len(state) <= head + tail:
+        return state
+    return state[:head] + "\n[...middle elided...]\n" + state[-tail:]
+
 def ask_kev(state):
+    state = truncate_state(state)
     payload = {"state": {"text": state, "task": state[:200]},
         "questions": {
             "effort": {"type": "choice", "instructions": EFFORT_INSTR,
