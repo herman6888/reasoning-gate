@@ -4,3 +4,4 @@ __pycache__/
 decisions.jsonl
 *.log
 topology_small.png
+*_small.png
