@@ -51,7 +51,7 @@ def log(obj):
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
-def post_json(url, payload, timeout=90):
+def post_json(url, payload, timeout=90.0):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                 headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -140,6 +140,42 @@ lease = Lease()
 
 LEASE_CAP = int(os.environ.get("KEV_LEASE_CAP", "5"))  # night run showed lease=10 too aggressive (none rode 5 gens)
 NONE_MIN_CONF = float(os.environ.get("KEV_NONE_MIN_CONF", "0.55"))  # 'none' (zero-think) needs higher confidence
+BREAKER_THRESHOLD = int(os.environ.get("KEV_BREAKER_THRESHOLD", "3"))  # consecutive failures before opening
+BREAKER_COOLDOWN = float(os.environ.get("KEV_BREAKER_COOLDOWN", "60"))  # seconds to stay open before a probe
+
+class KevBreaker:
+    # Silent passthrough when Kev is down: after N consecutive failures, skip Kev
+    # entirely for a cooldown window instead of hammering a dead endpoint.
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.fails = 0
+        self.open_until = 0.0
+        self.last_error = ""
+    def is_open(self):
+        with self.lock:
+            return time.time() < self.open_until
+    def record_fail(self, err):
+        with self.lock:
+            self.fails += 1
+            self.last_error = str(err)[:200]
+            if self.fails >= BREAKER_THRESHOLD:
+                self.open_until = time.time() + BREAKER_COOLDOWN
+                return True  # just opened
+            return False
+    def record_ok(self):
+        with self.lock:
+            was_down = self.fails > 0
+            self.fails = 0
+            self.open_until = 0.0
+            self.last_error = ""
+            return was_down
+    def state(self):
+        with self.lock:
+            return {"open": time.time() < self.open_until, "consecutive_fails": self.fails,
+                    "cooldown_remaining": max(0.0, round(self.open_until - time.time(), 1)),
+                    "last_error": self.last_error}
+
+breaker = KevBreaker()
 
 def truncate_state(state, head=500, tail=1500):
     # Night run: kev_ms tracks state length (r=0.90); median state 5.3k chars -> 4.6s/decision.
@@ -161,7 +197,7 @@ def ask_kev(state):
                                    "3": "Depth stable for about 3 more generations.",
                                    "5": "Depth stable for a sustained stretch of similar work."}}}}
     t0 = time.time()
-    resp = post_json(KEV_URL, payload, timeout=90)
+    resp = post_json(KEV_URL, payload, timeout=float(os.environ.get("KEV_TIMEOUT", "8")))
     ms = round((time.time() - t0) * 1000, 1)
     ans = resp.get("answers", {})
     eff = ans.get("effort", {})
@@ -177,8 +213,16 @@ def decide(client_effort, state, tag, latest_user=""):
     if hit and cached:
         log({"type": "lease_hit", "tag": tag, "effort": cached, "input_hash": ih})
         return cached
+    # Silent passthrough: if Kev is known-down, don't hammer it — use client effort.
+    if breaker.is_open():
+        st = breaker.state()
+        log({"type": "passthrough_breaker", "tag": tag, "effort": client_effort,
+             "cooldown_remaining": st["cooldown_remaining"], "input_hash": ih})
+        return client_effort
     try:
         choice, top, lease_n, kev_ms = ask_kev(state)
+        if breaker.record_ok():
+            log({"type": "breaker_recovered", "tag": tag, "input_hash": ih})
         if choice and top >= LOW_CONF_KEEP:
             # Guard: 'none' (zero thinking) is the most damaging misjudgement.
             # Night run showed a multi-step research task judged 'none' at conf 0.37.
@@ -195,8 +239,12 @@ def decide(client_effort, state, tag, latest_user=""):
              "confidence": round(top, 3), "input_hash": ih})
         return client_effort
     except Exception as e:
+        just_opened = breaker.record_fail(e)
         log({"type": "fallback_error", "tag": tag, "effort": client_effort,
-             "error": str(e)[:200], "input_hash": ih})
+             "error": str(e)[:200],
+             "breaker_just_opened": just_opened,
+             "breaker": breaker.state(),
+             "input_hash": ih})
         return client_effort
 
 class Handler(BaseHTTPRequestHandler):
@@ -212,7 +260,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self._send(200, json.dumps({"ok": True, "kev": KEV_URL,
-                "backend_chat": BACKEND_CHAT, "backend_resp": BACKEND_RESP}).encode())
+                "backend_chat": BACKEND_CHAT, "backend_resp": BACKEND_RESP,
+                "kev_breaker": breaker.state()}).encode())
         if self.path == "/v1/models":
             return self._send(200, json.dumps({"object": "list", "data": [
                 {"id": "kev-auto", "object": "model", "owned_by": "kev-proxy"}]}).encode())
