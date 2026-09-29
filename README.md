@@ -7,6 +7,8 @@ per request, how much thinking budget the next step actually needs. The decision
 injected into the backend request before forwarding. Simple tasks think less; hard
 tasks think more — saving compute without sacrificing quality.
 
+![reasoning-gate live dashboard](dashboard.png)
+
 ![reasoning-gate topology](topology_en.png)
 
 ## What problem it solves
