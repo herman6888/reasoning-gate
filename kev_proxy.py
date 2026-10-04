@@ -15,6 +15,12 @@ import json, os, sys, time, threading, hashlib, re, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEV_URL = os.environ.get("KEV_URL", "http://192.168.1.10:8905/v1/systemone")
+# Julia cascade: julia-effort-ft-v2 (.89:8906, 63.7% test) is the primary decider;
+# Kev-4B stays as hot standby (julia service down -> Kev takes over via breaker).
+# Eval showed julia margin does NOT correlate with accuracy, so no confidence gate:
+# julia answers everything; Kev only serves failover. JULIA_URL empty = disabled.
+JULIA_URL = os.environ.get("JULIA_URL", "")
+JULIA_TIMEOUT = float(os.environ.get("JULIA_TIMEOUT", "5"))
 BACKEND_CHAT = os.environ.get("BACKEND_CHAT", "http://192.168.1.20:8731/v1/chat/completions")
 BACKEND_RESP = os.environ.get("BACKEND_RESP", "http://192.168.1.20:8731/v1/responses")
 BACKEND_MODEL = os.environ.get("BACKEND_MODEL", "halogen-qwen3.8-flash-next")
@@ -176,6 +182,26 @@ class KevBreaker:
                     "last_error": self.last_error}
 
 breaker = KevBreaker()
+julia_breaker = KevBreaker()
+
+def ask_julia(state):
+    """Kev 协议同口径调用 julia_serve（.89:8906）。返回 (choice, top, lease_n, ms)。
+    julia 服务固定 lease=1（级联模式下决策每代重估）。"""
+    state = truncate_state(state)
+    payload = {"state": {"text": state, "task": state[:200]},
+        "questions": {
+            "effort": {"type": "choice", "instructions": EFFORT_INSTR,
+                       "criteria": {e: DESCRIPTIONS[e] for e in EFFORTS}},
+            "lease": {"type": "choice", "instructions": LEASE_INSTR,
+                      "criteria": {"1": "Depth changes very soon; decide again next generation."}}}}
+    t0 = time.time()
+    resp = post_json(JULIA_URL, payload, timeout=JULIA_TIMEOUT)
+    ms = round((time.time() - t0) * 1000, 1)
+    ans = resp.get("answers", {})
+    eff = ans.get("effort", {})
+    probs = eff.get("probabilities") or {}
+    top = max(probs.values()) if probs else 0.0
+    return eff.get("choice"), top, 1, ms
 
 def truncate_state(state, head=500, tail=1500):
     # Night run: kev_ms tracks state length (r=0.90); median state 5.3k chars -> 4.6s/decision.
@@ -213,6 +239,33 @@ def decide(client_effort, state, tag, latest_user=""):
     if hit and cached:
         log({"type": "lease_hit", "tag": tag, "effort": cached, "input_hash": ih})
         return cached
+    # Julia cascade primary: julia 63.7% > Kev 47.5% (80-case test). No confidence
+    # gate (julia margin doesn't correlate with accuracy); julia answers everything,
+    # Kev-4B is hot standby behind its own breaker.
+    if JULIA_URL and not julia_breaker.is_open():
+        try:
+            choice, top, lease_n, julia_ms = ask_julia(state)
+            if julia_breaker.record_ok():
+                log({"type": "julia_breaker_recovered", "tag": tag, "input_hash": ih})
+            if choice and top >= LOW_CONF_KEEP:
+                if choice == "none" and top < NONE_MIN_CONF:
+                    log({"type": "none_bumped", "tag": tag, "from": "none", "to": "minimal",
+                         "confidence": round(top, 3), "decider": "julia", "input_hash": ih})
+                    choice = "minimal"
+                lease.set(choice, min(lease_n, LEASE_CAP), ih)
+                log({"type": "decision", "tag": tag, "decider": "julia", "effort": choice,
+                     "confidence": round(top, 3), "lease": min(lease_n, LEASE_CAP),
+                     "kev_ms": julia_ms, "input_hash": ih})
+                return choice
+            log({"type": "fallback_low_conf", "tag": tag, "decider": "julia",
+                 "effort": client_effort, "confidence": round(top, 3), "input_hash": ih})
+            return client_effort
+        except Exception as e:
+            just_opened = julia_breaker.record_fail(e)
+            log({"type": "julia_fallback", "tag": tag, "effort": client_effort,
+                 "error": str(e)[:200], "julia_breaker_just_opened": just_opened,
+                 "julia_breaker": julia_breaker.state(), "input_hash": ih})
+            # fall through to Kev path below
     # Silent passthrough: if Kev is known-down, don't hammer it — use client effort.
     if breaker.is_open():
         st = breaker.state()
@@ -269,10 +322,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def _forward(self, url, body, tag):
         t0 = time.time()
+        streaming = bool(body.get("stream"))
         try:
             req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                        headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=900) as r:
+                if streaming:
+                    # pass SSE through chunked; buffer a tail copy for usage audit
+                    ctype = r.headers.get("Content-Type", "text/event-stream")
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    tail = bytearray()
+                    try:
+                        while True:
+                            chunk = r.read(4096)
+                            if not chunk:
+                                break
+                            if len(tail) < 65536:
+                                tail.extend(chunk)
+                            self.wfile.write(b"%X\r\n" % len(chunk))
+                            self.wfile.write(chunk + b"\r\n")
+                        self.wfile.write(b"0\r\n\r\n")
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    self._log_stream_applied(bytes(tail), body, t0, tag)
+                    return
                 resp_bytes = r.read()
         except urllib.error.HTTPError as e:
             return self._send(e.code, e.read())
@@ -290,7 +366,42 @@ class Handler(BaseHTTPRequestHandler):
                  "reasoning_tokens": rt})
         except Exception:
             pass
-        return self._send(200, resp_bytes)
+        try:
+            return self._send(200, resp_bytes)
+        except (BrokenPipeError, ConnectionResetError):
+            return None
+
+    def _log_stream_applied(self, tail, body, t0, tag):
+        # scan SSE tail for the event carrying usage (response.completed / final chat chunk)
+        try:
+            text = tail.decode("utf-8", "ignore")
+            usage = None
+            for line in reversed(text.splitlines()):
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(payload)
+                except Exception:
+                    continue
+                u = obj.get("usage") or (obj.get("response") or {}).get("usage")
+                if u:
+                    usage = u
+                    break
+            if usage is None:
+                return
+            rt = (usage.get("output_tokens_details") or {}).get("reasoning_tokens") or \
+                 (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+            log({"type": "applied", "tag": tag, "effort": body.get("reasoning_effort"),
+                 "backend_ms": round((time.time() - t0) * 1000, 1),
+                 "stream": True,
+                 "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
+                 "reasoning_tokens": rt})
+        except Exception:
+            pass
 
     def do_POST(self):
         try:
@@ -315,7 +426,9 @@ class Handler(BaseHTTPRequestHandler):
             body["reasoning"] = {"effort": mapped}
         # audit trail: keep a state preview so morning digest can review decisions
         log({"type": "state_preview", "tag": tag, "effort": mapped,
-             "state_head": state[:300], "state_chars": len(state)})
+             "state_head": state[:300], "state_chars": len(state),
+             "state_full": state[:2500],
+             "input_hash": hashlib.sha256(latest_user.encode()).hexdigest()[:16]})
         return self._forward(BACKEND_RESP if tag == "responses" else BACKEND_CHAT, body, tag)
 
 if __name__ == "__main__":
