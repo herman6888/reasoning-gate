@@ -11,7 +11,7 @@ Features:
   * fail-open: Kev down / low confidence -> keep client/default effort, log fallback
   * every decision logged to JSONL for morning cron digest
 """
-import json, os, sys, time, threading, hashlib, re, urllib.request, urllib.error
+import json, os, sys, time, threading, hashlib, re, math, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEV_URL = os.environ.get("KEV_URL", "http://192.168.1.10:8905/v1/systemone")
@@ -21,6 +21,12 @@ KEV_URL = os.environ.get("KEV_URL", "http://192.168.1.10:8905/v1/systemone")
 # julia answers everything; Kev only serves failover. JULIA_URL empty = disabled.
 JULIA_URL = os.environ.get("JULIA_URL", "")
 JULIA_TIMEOUT = float(os.environ.get("JULIA_TIMEOUT", "5"))
+# Decider cascade standby (v3): Mapika decider-0.8b on .89 halogen NPU (:8731),
+# OpenAI json_schema protocol. Order: julia primary -> decider standby -> Kev (legacy,
+# enabled only if KEV_URL explicitly set). DECIDER_URL empty = disabled.
+DECIDER_URL = os.environ.get("DECIDER_URL", "")
+DECIDER_MODEL = os.environ.get("DECIDER_MODEL", "decider-0.8b")
+DECIDER_TIMEOUT = float(os.environ.get("DECIDER_TIMEOUT", "10"))
 BACKEND_CHAT = os.environ.get("BACKEND_CHAT", "http://192.168.1.20:8731/v1/chat/completions")
 BACKEND_RESP = os.environ.get("BACKEND_RESP", "http://192.168.1.20:8731/v1/responses")
 BACKEND_MODEL = os.environ.get("BACKEND_MODEL", "halogen-qwen3.8-flash-next")
@@ -183,6 +189,35 @@ class KevBreaker:
 
 breaker = KevBreaker()
 julia_breaker = KevBreaker()
+decider_breaker = KevBreaker()
+
+def ask_decider(state):
+    """decider-0.8b (halogen NPU, OpenAI json_schema 协议)。返回 (choice, top, lease_n, ms)。
+    官方 chat 格式（HF 卡），NPU 直推 ~50ms；无 lease 概念，固定 1。"""
+    state = truncate_state(state)
+    payload = {
+        "model": DECIDER_MODEL,
+        "messages": [{"role": "user", "content": state}],
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "effort", "description": EFFORT_INSTR,
+            "schema": {"enum": EFFORTS}}},
+        "logprobs": True, "top_logprobs": len(EFFORTS),
+    }
+    t0 = time.time()
+    resp = post_json(DECIDER_URL, payload, timeout=DECIDER_TIMEOUT)
+    ms = round((time.time() - t0) * 1000, 1)
+    ch = resp["choices"][0]
+    try:
+        choice = json.loads(ch["message"]["content"])
+    except Exception:
+        choice = ch["message"]["content"].strip().strip('"')
+    top = 0.0
+    lps = (ch.get("logprobs") or {}).get("content") or []
+    for tk in lps:
+        for t in tk.get("top_logprobs") or []:
+            if t.get("token", "").strip().strip('"') == choice:
+                top = max(top, math.exp(t.get("logprob", -99)))
+    return choice if choice in EFFORT_MAP else None, top, 1, ms
 
 def ask_julia(state):
     """Kev 协议同口径调用 julia_serve（.89:8906）。返回 (choice, top, lease_n, ms)。
@@ -265,9 +300,35 @@ def decide(client_effort, state, tag, latest_user=""):
             log({"type": "julia_fallback", "tag": tag, "effort": client_effort,
                  "error": str(e)[:200], "julia_breaker_just_opened": just_opened,
                  "julia_breaker": julia_breaker.state(), "input_hash": ih})
-            # fall through to Kev path below
-    # Silent passthrough: if Kev is known-down, don't hammer it — use client effort.
-    if breaker.is_open():
+            # fall through to decider/Kev path below
+    # Decider standby: .89 NPU decider-0.8b takes over when julia is down.
+    if DECIDER_URL and not decider_breaker.is_open():
+        try:
+            choice, top, lease_n, d_ms = ask_decider(state)
+            if decider_breaker.record_ok():
+                log({"type": "decider_breaker_recovered", "tag": tag, "input_hash": ih})
+            if choice and top >= LOW_CONF_KEEP:
+                if choice == "none" and top < NONE_MIN_CONF:
+                    log({"type": "none_bumped", "tag": tag, "from": "none", "to": "minimal",
+                         "confidence": round(top, 3), "decider": "decider", "input_hash": ih})
+                    choice = "minimal"
+                lease.set(choice, min(lease_n, LEASE_CAP), ih)
+                log({"type": "decision", "tag": tag, "decider": "decider", "effort": choice,
+                     "confidence": round(top, 3), "lease": min(lease_n, LEASE_CAP),
+                     "kev_ms": d_ms, "input_hash": ih})
+                return choice
+            log({"type": "fallback_low_conf", "tag": tag, "decider": "decider",
+                 "effort": client_effort, "confidence": round(top, 3), "input_hash": ih})
+            return client_effort
+        except Exception as e:
+            just_opened = decider_breaker.record_fail(e)
+            log({"type": "decider_fallback", "tag": tag, "effort": client_effort,
+                 "error": str(e)[:200], "decider_breaker_just_opened": just_opened,
+                 "decider_breaker": decider_breaker.state(), "input_hash": ih})
+            # fall through to Kev legacy path below
+    # Silent passthrough: if Kev is known-down (or not configured — v3: decider is the
+    # standby now, .80 KEV-4B decommissioned 2026-10-07), don't hammer it.
+    if not KEV_URL or breaker.is_open():
         st = breaker.state()
         log({"type": "passthrough_breaker", "tag": tag, "effort": client_effort,
              "cooldown_remaining": st["cooldown_remaining"], "input_hash": ih})
