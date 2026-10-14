@@ -1,3 +1,5 @@
+# Legacy: starts the KEV-4B stack on Windows (.80). KEV-4B was decommissioned
+# 2026-10-07; kept for rollback (fill KEV_URL in kev-proxy to re-enable this path).
 $ErrorActionPreference = "SilentlyContinue"
 function Is-Listening($port) { (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) -ne $null }
 if (-not (Is-Listening 8901)) {

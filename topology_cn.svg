@@ -24,9 +24,9 @@
   <text x="350" y="228" fill="#334155" font-size="12.5">fail-open 兜底</text>
 
   <rect x="700" y="70" width="250" height="86" fill="none" stroke="#15803d" stroke-width="1.4"/>
-  <text x="825" y="96" fill="#14532d" font-size="15" text-anchor="middle">Kev-4B 决策服务</text>
-  <text x="825" y="116" fill="#166534" font-size="11" text-anchor="middle" font-family="monospace">192.168.1.10:8905</text>
-  <text x="825" y="136" fill="#4b5563" font-size="11" text-anchor="middle">/v1/systemone · Q8_0 GPU</text>
+  <text x="825" y="96" fill="#14532d" font-size="15" text-anchor="middle">决策级联（julia 主）</text>
+  <text x="825" y="116" fill="#166534" font-size="11" text-anchor="middle" font-family="monospace">julia :8906 → 0.8B :8731</text>
+  <text x="825" y="136" fill="#4b5563" font-size="11" text-anchor="middle">备胎→透传 · Kev 已退役</text>
 
   <rect x="700" y="210" width="250" height="86" fill="none" stroke="#7c3aed" stroke-width="1.4"/>
   <text x="825" y="236" fill="#4c1d95" font-size="15" text-anchor="middle">推理后端 (halogen)</text>
@@ -47,7 +47,7 @@
   <text x="624" y="272" fill="#64748b" font-size="11" text-anchor="middle">回传</text>
 
   <text x="40" y="360" fill="#334155" font-size="13">lease 命中时跳过决策，直接转发（夜间实测约 69% 请求零决策开销）。</text>
-  <text x="40" y="384" fill="#334155" font-size="13">Kev 不可用时 fail-open，保持客户端默认 effort，请求不中断。</text>
+  <text x="40" y="384" fill="#334155" font-size="13">级联全体不可用时 fail-open，保持客户端默认 effort，请求不中断。</text>
   <text x="40" y="408" fill="#94a3b8" font-size="12">IP 为占位地址，实际部署经环境变量配置。</text>
 
   <text x="40" y="448" fill="#0f172a" font-size="14" font-weight="bold">夜间 cron 实测（3 个可比任务；基线 = 9/20–9/23 halogen 均值）</text>

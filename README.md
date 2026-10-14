@@ -2,10 +2,11 @@
 
 An OpenAI-compatible **reasoning-effort decision layer**. It sits between an agent
 (Hermes / Codex) and an inference backend (halogen / any OpenAI-compatible server
-that accepts `reasoning_effort`), and uses a small local model (Kev-4B) to decide,
-per request, how much thinking budget the next step actually needs. The decision is
-injected into the backend request before forwarding. Simple tasks think less; hard
-tasks think more — saving compute without sacrificing quality.
+that accepts `reasoning_effort`), and uses small local decision models — today a
+fine-tuned **julia-1-3B** as primary decider with a 0.8B cascade standby — to
+decide, per request, how much thinking budget the next step actually needs. The
+decision is injected into the backend request before forwarding. Simple tasks
+think less; hard tasks think more — saving compute without sacrificing quality.
 
 ![reasoning-gate live dashboard](dashboard.png)
 
@@ -16,42 +17,81 @@ tasks think more — saving compute without sacrificing quality.
 Mainstream agent harnesses (including hermes-agent) **do not send `reasoning_effort`**
 to custom OpenAI-compatible endpoints — thinking is either always on or always off,
 with no per-task adjustment. reasoning-gate adds that layer: every request first asks
-Kev-4B "what reasoning depth does the next step need", then injects the matching
-effort into the backend call.
+a small decision model "what reasoning depth does the next step need", then injects
+the matching effort into the backend call.
 
 ```
 client (Hermes chat_completions / Codex responses)
         |
         v
-   reasoning-gate :8910  -->  Kev-4B decision service (/v1/systemone)
-        |                            (dohnuts.cpp HIP, Q8_0, GPU)
+   reasoning-gate :8910
+        |  decision cascade (per request, with per-endpoint circuit breakers):
+        |    1. julia-1-3B fine-tune  (Kev protocol /v1/systemone,  :8906)   primary
+        |    2. decider-0.8b          (OpenAI json_schema, NPU,    :8731)   standby
+        |    3. passthrough            (keep client effort)                  last resort
         v
    backend (halogen :8731)  <-- reasoning_effort injected, then forwarded
 ```
+
+> **History**: the original deployment used KEV-4B (dohnuts.cpp HIP, GPU) as the sole
+> decision model. KEV-4B was decommissioned on 2026-10-07 and replaced by a
+> fine-tuned julia-1-3B (see "Decision model upgrade" below); the Kev code path
+> remains as legacy, enabled by setting a non-empty `KEV_URL`.
 
 ## Core features
 
 - **Dual protocol**: handles both `/v1/chat/completions` (Hermes) and
   `/v1/responses` (Codex). Codex uses `reasoning.effort`; both shapes are read on
   input and both are written on output.
-- **Lease caching**: Kev answers "effort + how many generations it stays valid" in
-  one pass. The cache key is the hash of the latest user message, so growing tool
-  output does not bust the cache. In overnight runs ~69% of requests hit the cache
-  with zero decision cost.
-- **Fail-open**: if Kev is down / times out / returns low confidence, the client's
-  default effort is kept — the request is never blocked.
+- **Decision cascade with circuit breakers**: julia (primary) → decider-0.8b
+  (standby) → passthrough. Each endpoint has an independent breaker (5 consecutive
+  failures open it, 60 s half-open probe), so a dead decider degrades gracefully
+  and self-heals — verified end-to-end in production (kill julia → decider decisions
+  → restart julia → auto-recover, no manual intervention).
+- **Lease caching**: Kev-style answers carry "effort + how many generations it
+  stays valid". The cache key is the hash of the latest user message, so growing
+  tool output does not bust the cache. In Kev-era overnight runs ~69% of requests
+  hit the cache with zero decision cost. (julia is trained without lease output and
+  always returns lease=1 — every generation is re-evaluated; lease hits go to zero
+  by design, at a cost of ~60 ms per request.)
+- **Fail-open**: if the whole cascade is down / times out, the client's default
+  effort is kept — the request is never blocked.
 - **Harness-wrapper stripping**: before deciding, boilerplate text (cron / skill /
-  memory-context wrappers) is stripped so Kev judges the real task, not the
-  boilerplate. Without this, the semantic signal is diluted and confidence drops
-  (measured: 0.27 → 0.66 on cron tasks after adding stripping).
+  memory-context wrappers) is stripped so the decider judges the real task, not
+  the boilerplate. Without this, the semantic signal is diluted and confidence
+  drops (measured: 0.27 → 0.66 on cron tasks after adding stripping).
 - **None-confidence guard**: a wrong `none` (zero thinking) is the most damaging
   misjudgement. It requires a higher confidence threshold (`KEV_NONE_MIN_CONF`),
-  otherwise it is bumped to `minimal`.
-- **Full JSONL audit**: every request is logged (decision / lease_hit / none_bumped
-  / state_preview / applied) for post-hoc analysis of effort distribution and
-  compute savings.
+  otherwise it is bumped to `minimal`. (No gate applies to julia: its self-reported
+  margin was measured to be uncorrelated with accuracy.)
+- **Full JSONL audit**: every request is logged (decision / decider / lease_hit /
+  none_bumped / state_preview / applied) for post-hoc analysis of effort
+  distribution and compute savings.
 
-## Measured results (overnight cron)
+## Decision model upgrade (2026-10-07): julia-1-3B > KEV-4B
+
+An open eval set (80 real traffic cases: Hermes-cron 35 / Codex-interactive 25 /
+synthetic hard cases 20), graded by 3 voters (deepseek-v4-pro, nemotron-ultra,
+solar-pro-3) and 4 seats (adding the production model) — full dataset, training
+and reproducible pipeline:
+[effort-model-eval](https://github.com/herman6888/effort-model-eval).
+
+| Decider | Agreement with consensus |
+|---|---|
+| **julia-1-3B fine-tuned (ft-v2)** | **63.7%** |
+| KEV-4B (manufacturer model) | 47.5% |
+| Qwen3-0.6B zero-shot base | 45.0% |
+
+Side-by-side production spot checks agreed with julia 10/10. julia's agreement
+ceiling is structural (training distribution ≈ real traffic ⇒ the model is
+locally optimal in production), so it stays in production rather than a stronger
+zero-shot model scoring higher on a distribution-shifted eval. Decision latency
+dropped from KEV-4B's ~258 ms (GPU) to 58–146 ms on plain CPU (julia served by
+`julia_serve.py`, a drop-in Kev `/v1/systemone` server — included in
+[effort-model-eval](https://github.com/herman6888/effort-model-eval)); the decider
+standby answers in ~277 ms on an NPU.
+
+## Measured results (overnight cron, Kev era)
 
 Four scheduled agent jobs were switched from the default halogen backend to
 reasoning-gate (`kev-auto`). Baseline = the 9/20–9/23 halogen average per task.
@@ -65,34 +105,41 @@ inside its baseline window and is excluded.
 | AI news briefing | 914 s → 563 s | **−38%** | 15016 → 14740 | **−2%** |
 | **Total (3 tasks)** | **1899 s → 878 s** | **−54%** | **24468 → 19595** | **−20%** |
 
-Across the overnight window (00:14 → 08:00): 65 proxied requests — 13 real
-decisions, 45 lease hits (69% zero-decision), 7 fail-opens. Decision latency:
-median 2.8 s, fastest 0.56 s, 9.3 s worst-case under GPU contention.
-
 Wall-clock savings come from lower effort levels producing shorter reasoning
 blocks; output-token savings are smaller because the final answer length is
-task-bound. The biggest win is on tasks Kev confidently classifies as simple
-(Strix Halo: −75% wall clock). All jobs completed and delivered normally; the
-fail-open path was exercised (HTTP 413 on an oversized state, since fixed by
-capping the decision payload) without any job failing.
+task-bound. The biggest win is on tasks confidently classified as simple (Strix
+Halo: −75% wall clock). All jobs completed and delivered normally; the fail-open
+path was exercised without any job failing.
 
 ## Deployment
 
-### 1. Kev-4B decision service (backend)
+### 1. Decision endpoints (at least one)
 
-You need a Kev-4B service exposing `/v1/systemone`. This project was tested with a
-self-compiled HIP build of
-[dohnuts.cpp](https://github.com/DreamBlooms/dohnuts.cpp) (AMD gfx120x, Q8_0 full
-GPU offload, ~4.4 GB VRAM, median decision latency ~2.8 s). Any service returning
-the same System-One schema works.
+- **julia (primary)**: a Kev-protocol server exposing `/v1/systemone`.
+  `julia_serve.py` from
+  [effort-model-eval](https://github.com/herman6888/effort-model-eval) serves the
+  fine-tuned julia-1-3B checkpoint (tested CPU-only, ~60 ms/decision).
+- **decider-0.8b (standby)**: any OpenAI-compatible chat endpoint that supports
+  `response_format` json_schema + `logprobs` (tested: a 0.8B classifier on an
+  AMD NPU runtime via halogen-flash-server).
+- **KEV-4B (legacy)**: `/v1/systemone` as served by
+  [dohnuts.cpp](https://github.com/DreamBlooms/dohnuts.cpp). Only used if
+  `KEV_URL` is non-empty.
 
 ### 2. reasoning-gate
 
 ```bash
-cp .env.example .env   # adjust to your topology
-KEV_URL=http://<kev-host>:8905/v1/systemone \
+# julia primary + decider standby (recommended)
+JULIA_URL=http://<julia-host>:8906/v1/systemone \
+DECIDER_URL=http://<backend>:8731/v1/chat/completions \
+DECIDER_MODEL=decider-0.8b \
 BACKEND_CHAT=http://<backend>:8731/v1/chat/completions \
 BACKEND_RESP=http://<backend>:8731/v1/responses \
+python3 kev_proxy.py
+
+# KEV-4B legacy mode only
+KEV_URL=http://<kev-host>:8905/v1/systemone \
+BACKEND_CHAT=http://<backend>:8731/v1/chat/completions \
 python3 kev_proxy.py
 ```
 
@@ -122,7 +169,7 @@ model_aliases:
 **Codex** (`~/.codex/config.toml` + `model_catalog.json`):
 ```toml
 [model_providers.kev]
-name = "kev (auto effort via Kev-4B)"
+name = "kev (auto effort via julia cascade)"
 base_url = "http://127.0.0.1:8910/v1"
 wire_api = "responses"
 requires_openai_auth = false
@@ -134,7 +181,12 @@ requires_openai_auth = false
 
 | Variable | Default | Description |
 |---|---|---|
-| `KEV_URL` | `http://192.168.1.10:8905/v1/systemone` | Kev-4B decision service |
+| `JULIA_URL` | *(empty = disabled)* | julia decision service (`/v1/systemone`, Kev protocol) |
+| `JULIA_TIMEOUT` | `5` | julia timeout (seconds) |
+| `DECIDER_URL` | *(empty = disabled)* | standby decider, OpenAI chat-completions endpoint |
+| `DECIDER_MODEL` | `decider-0.8b` | model name for the standby decider |
+| `DECIDER_TIMEOUT` | `10` | standby decider timeout (seconds) |
+| `KEV_URL` | `http://192.168.1.10:8905/v1/systemone` | KEV-4B legacy service; **set empty to disable the Kev path entirely** |
 | `BACKEND_CHAT` | `http://192.168.1.20:8731/v1/chat/completions` | Backend chat endpoint |
 | `BACKEND_RESP` | `http://192.168.1.20:8731/v1/responses` | Backend responses endpoint |
 | `BACKEND_MODEL` | `halogen-qwen3.8-flash-next` | Real model name forwarded to backend |
@@ -148,12 +200,14 @@ Effort mapping follows the halogen contract: `minimal/low/medium/high/xhigh` +
 
 ## Known limitations
 
-- Kev-4B is a **text-semantic** decision model and is blind to numeric state;
-  numeric threshold decisions should be plain code, not a decision model.
-- The decision model itself adds latency (GPU contention queues); lease caching is
-  the main mitigation.
-- Confidence is generally low (0.3–0.68 is common); fail-open + the none-guard are
-  safety nets, not hard guarantees.
+- Decision models are **text-semantic** and blind to numeric state; numeric
+  threshold decisions should be plain code, not a decision model.
+- julia's agreement ceiling (63.7%) is set by voter consensus, and it starves on
+  extreme tiers in small samples (medium 0/5, high 0/1) — production monitoring
+  covers this. Its self-reported margin is uncorrelated with accuracy, so no
+  confidence gate applies to it.
+- The decision step adds latency (julia ~60 ms CPU, decider ~277 ms NPU, legacy Kev
+  ~258 ms GPU); with julia's lease fixed at 1 every generation is re-decided.
 - Savings concentrate on tasks with a clear simple/complex split. On tasks that are
   genuinely complex end to end (AI news briefing: −2% output tokens), the gate
   mostly avoids *extra* thinking rather than removing needed thinking.
@@ -163,5 +217,4 @@ Effort mapping follows the halogen contract: `minimal/low/medium/high/xhigh` +
 MIT
 
 ---
-
 中文文档见 [README_zh.md](README_zh.md)。
