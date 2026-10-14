@@ -1,4 +1,8 @@
-# reasoning-gate
+<h1 align="center">reasoning-gate</h1>
+
+<p align="center">
+  <strong>English</strong> · <a href="README_zh.md">中文</a>
+</p>
 
 An OpenAI-compatible **reasoning-effort decision layer**. It sits between an agent
 (Hermes / Codex) and an inference backend (halogen / any OpenAI-compatible server
@@ -215,6 +219,3 @@ Effort mapping follows the halogen contract: `minimal/low/medium/high/xhigh` +
 ## License
 
 MIT
-
----
-中文文档见 [README_zh.md](README_zh.md)。

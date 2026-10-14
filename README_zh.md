@@ -1,4 +1,8 @@
-# reasoning-gate
+<h1 align="center">reasoning-gate</h1>
+
+<p align="center">
+  <strong>中文</strong> · <a href="README.md">English</a>
+</p>
 
 一个 OpenAI 兼容的 **reasoning-effort 决策中间层**。它坐在 agent（Hermes / Codex）
 和推理后端（halogen / 任何接受 `reasoning_effort` 的 OpenAI 兼容服务）之间，
