@@ -25,7 +25,7 @@ JULIA_TIMEOUT = float(os.environ.get("JULIA_TIMEOUT", "5"))
 # OpenAI json_schema protocol. Order: julia primary -> decider standby -> Kev (legacy,
 # enabled only if KEV_URL explicitly set). DECIDER_URL empty = disabled.
 DECIDER_URL = os.environ.get("DECIDER_URL", "")
-DECIDER_MODEL = os.environ.get("DECIDER_MODEL", "decider-0.8b")
+DECIDER_MODEL = os.environ.get("DECIDER_MODEL", "d3-lite")
 DECIDER_TIMEOUT = float(os.environ.get("DECIDER_TIMEOUT", "10"))
 BACKEND_CHAT = os.environ.get("BACKEND_CHAT", "http://192.168.1.20:8731/v1/chat/completions")
 BACKEND_RESP = os.environ.get("BACKEND_RESP", "http://192.168.1.20:8731/v1/responses")
@@ -192,32 +192,24 @@ julia_breaker = KevBreaker()
 decider_breaker = KevBreaker()
 
 def ask_decider(state):
-    """decider-0.8b (halogen NPU, OpenAI json_schema 协议)。返回 (choice, top, lease_n, ms)。
-    官方 chat 格式（HF 卡），NPU 直推 ~50ms；无 lease 概念，固定 1。"""
+    """d3-lite (halogen NPU, System One /v1/systemone 协议)。返回 (choice, top, lease_n, ms)。
+    vLLM Semantic Router Decision 3.0（0.8B）只说 systemone（zero-shot 分类器，不走 chat）；
+    每问一次全 prompt 前向（不吃增量 prefill）；无 lease 概念，固定 1。"""
     state = truncate_state(state)
     payload = {
         "model": DECIDER_MODEL,
-        "messages": [{"role": "user", "content": state}],
-        "response_format": {"type": "json_schema", "json_schema": {
-            "name": "effort", "description": EFFORT_INSTR,
-            "schema": {"enum": EFFORTS}}},
-        "logprobs": True, "top_logprobs": len(EFFORTS),
+        "state": {"text": state, "task": state[:200]},
+        "questions": {
+            "effort": {"type": "choice", "instructions": EFFORT_INSTR,
+                       "criteria": {e: DESCRIPTIONS[e] for e in EFFORTS}}},
     }
     t0 = time.time()
     resp = post_json(DECIDER_URL, payload, timeout=DECIDER_TIMEOUT)
     ms = round((time.time() - t0) * 1000, 1)
-    ch = resp["choices"][0]
-    try:
-        choice = json.loads(ch["message"]["content"])
-    except Exception:
-        choice = ch["message"]["content"].strip().strip('"')
-    top = 0.0
-    lps = (ch.get("logprobs") or {}).get("content") or []
-    for tk in lps:
-        for t in tk.get("top_logprobs") or []:
-            if t.get("token", "").strip().strip('"') == choice:
-                top = max(top, math.exp(t.get("logprob", -99)))
-    return choice if choice in EFFORT_MAP else None, top, 1, ms
+    eff = resp.get("answers", {}).get("effort", {})
+    probs = eff.get("probabilities") or {}
+    top = max(probs.values()) if probs else 0.0
+    return eff.get("choice"), top, 1, ms
 
 def ask_julia(state):
     """Kev 协议同口径调用 julia_serve（.89:8906）。返回 (choice, top, lease_n, ms)。

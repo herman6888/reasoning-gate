@@ -31,7 +31,7 @@ client (Hermes chat_completions / Codex responses)
    reasoning-gate :8910
         |  decision cascade (per request, with per-endpoint circuit breakers):
         |    1. julia-1-3B fine-tune  (Kev protocol /v1/systemone,  :8906)   primary
-        |    2. decider-0.8b          (OpenAI json_schema, NPU,    :8731)   standby
+        |    2. d3-lite               (System One, NPU,            :8731)   standby
         |    3. passthrough            (keep client effort)                  last resort
         v
    backend (halogen :8731)  <-- reasoning_effort injected, then forwarded
@@ -47,7 +47,7 @@ client (Hermes chat_completions / Codex responses)
 - **Dual protocol**: handles both `/v1/chat/completions` (Hermes) and
   `/v1/responses` (Codex). Codex uses `reasoning.effort`; both shapes are read on
   input and both are written on output.
-- **Decision cascade with circuit breakers**: julia (primary) → decider-0.8b
+- **Decision cascade with circuit breakers**: julia (primary) → d3-lite
   (standby) → passthrough. Each endpoint has an independent breaker (5 consecutive
   failures open it, 60 s half-open probe), so a dead decider degrades gracefully
   and self-heals — verified end-to-end in production (kill julia → decider decisions
@@ -123,9 +123,10 @@ path was exercised without any job failing.
   `julia_serve.py` from
   [effort-model-eval](https://github.com/herman6888/effort-model-eval) serves the
   fine-tuned julia-1-3B checkpoint (tested CPU-only, ~60 ms/decision).
-- **decider-0.8b (standby)**: any OpenAI-compatible chat endpoint that supports
-  `response_format` json_schema + `logprobs` (tested: a 0.8B classifier on an
-  AMD NPU runtime via halogen-flash-server).
+- **d3-lite (standby)**: a System One `/v1/systemone` endpoint speaking the
+  Kev-compatible answers schema (tested: vLLM Semantic Router Decision 3.0
+  d3-lite 0.8B on an AMD NPU runtime via halogen-flash-server >= 0.18.11;
+  one full-prompt pass per question, no chat/json_schema path).
 - **KEV-4B (legacy)**: `/v1/systemone` as served by
   [dohnuts.cpp](https://github.com/DreamBlooms/dohnuts.cpp). Only used if
   `KEV_URL` is non-empty.
@@ -135,8 +136,8 @@ path was exercised without any job failing.
 ```bash
 # julia primary + decider standby (recommended)
 JULIA_URL=http://<julia-host>:8906/v1/systemone \
-DECIDER_URL=http://<backend>:8731/v1/chat/completions \
-DECIDER_MODEL=decider-0.8b \
+DECIDER_URL=http://<backend>:8731/v1/systemone \
+DECIDER_MODEL=d3-lite \
 BACKEND_CHAT=http://<backend>:8731/v1/chat/completions \
 BACKEND_RESP=http://<backend>:8731/v1/responses \
 python3 kev_proxy.py
@@ -188,7 +189,7 @@ requires_openai_auth = false
 | `JULIA_URL` | *(empty = disabled)* | julia decision service (`/v1/systemone`, Kev protocol) |
 | `JULIA_TIMEOUT` | `5` | julia timeout (seconds) |
 | `DECIDER_URL` | *(empty = disabled)* | standby decider, OpenAI chat-completions endpoint |
-| `DECIDER_MODEL` | `decider-0.8b` | model name for the standby decider |
+| `DECIDER_MODEL` | `d3-lite` | model name for the standby decider |
 | `DECIDER_TIMEOUT` | `10` | standby decider timeout (seconds) |
 | `KEV_URL` | `http://192.168.1.10:8905/v1/systemone` | KEV-4B legacy service; **set empty to disable the Kev path entirely** |
 | `BACKEND_CHAT` | `http://192.168.1.20:8731/v1/chat/completions` | Backend chat endpoint |

@@ -5,13 +5,13 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/Projects/kev-proxy
-# Decision cascade: julia (primary) -> decider-0.8b (standby) -> passthrough.
+# Decision cascade: julia (primary) -> d3-lite (standby) -> passthrough.
 # KEV_URL kept empty disables the legacy KEV-4B path; set it to re-enable.
 Environment=KEV_URL=
 Environment=JULIA_URL=http://192.168.1.30:8906/v1/systemone
 Environment=JULIA_TIMEOUT=5
-Environment=DECIDER_URL=http://192.168.1.20:8731/v1/chat/completions
-Environment=DECIDER_MODEL=decider-0.8b
+Environment=DECIDER_URL=http://192.168.1.20:8731/v1/systemone
+Environment=DECIDER_MODEL=d3-lite
 Environment=DECIDER_TIMEOUT=10
 Environment=BACKEND_CHAT=http://192.168.1.20:8731/v1/chat/completions
 Environment=BACKEND_RESP=http://192.168.1.20:8731/v1/responses

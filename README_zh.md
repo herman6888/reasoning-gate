@@ -19,7 +19,7 @@ client (Hermes chat_completions / Codex responses)
    reasoning-gate :8910
         │  决策级联（每请求，端点各有独立熔断器）：
         │    1. julia-1-3B 微调    (Kev 协议 /v1/systemone，:8906)   主判
-        │    2. decider-0.8b       (OpenAI json_schema，NPU，:8731)  备胎
+        │    2. d3-lite            (System One，NPU，:8731)          备胎
         │    3. passthrough        (保持客户端 effort)               兜底
         ▼
    后端 (halogen :8731)  ← 注入 reasoning_effort 后转发
@@ -40,7 +40,7 @@ client (Hermes chat_completions / Codex responses)
 
 - **双协议**：同时吃 `/v1/chat/completions`（Hermes）和 `/v1/responses`（Codex）。
   Codex 的 effort 字段是 `reasoning.effort`，读取时两种形状都兼容，回写时都设。
-- **决策级联 + 独立熔断**：julia（主）→ decider-0.8b（备胎）→ passthrough。
+- **决策级联 + 独立熔断**：julia（主）→ d3-lite（备胎）→ passthrough。
   每个端点独立熔断（连续 5 次失败打开，60s 半开探测），决策端挂了自动降级、
   恢复自愈——生产实测端到端验证过（杀 julia → 落 decider 决策 → 拉起 julia → 自动回主链路）。
 - **lease 缓存**：Kev 风格的答案带「effort + 有效代数」，缓存 key 锚定最新一条
@@ -99,8 +99,9 @@ client (Hermes chat_completions / Codex responses)
 - **julia（主判）**：暴露 `/v1/systemone` 的 Kev 协议服务。
   [effort-model-eval](https://github.com/herman6888/effort-model-eval) 里的
   `julia_serve.py` 直接服务 julia-1-3B 微调权重（实测纯 CPU，决策 ~60ms）。
-- **decider-0.8b（备胎）**：任何支持 `response_format` json_schema + `logprobs` 的
-  OpenAI 兼容端点（实测：AMD NPU 运行时上的 0.8B 分类器，经 halogen-flash-server）。
+- **d3-lite（备胎）**：任何说 Kev 兼容 answers 结构的 System One `/v1/systemone`
+  端点（实测：vLLM Semantic Router Decision 3.0 的 d3-lite 0.8B，经
+  halogen-flash-server ≥0.18.11 跑在 AMD NPU；每问一次全 prompt 前向，无 chat/json_schema 路径）。
 - **KEV-4B（legacy）**：[dohnuts.cpp](https://github.com/DreamBlooms/dohnuts.cpp)
   提供的 `/v1/systemone`。仅当 `KEV_URL` 非空时启用。
 
@@ -109,8 +110,8 @@ client (Hermes chat_completions / Codex responses)
 ```bash
 # julia 主判 + decider 备胎（推荐）
 JULIA_URL=http://<julia-host>:8906/v1/systemone \
-DECIDER_URL=http://<backend>:8731/v1/chat/completions \
-DECIDER_MODEL=decider-0.8b \
+DECIDER_URL=http://<backend>:8731/v1/systemone \
+DECIDER_MODEL=d3-lite \
 BACKEND_CHAT=http://<backend>:8731/v1/chat/completions \
 BACKEND_RESP=http://<backend>:8731/v1/responses \
 python3 kev_proxy.py
@@ -160,7 +161,7 @@ requires_openai_auth = false
 | `JULIA_URL` | *（空 = 禁用）* | julia 决策服务地址（`/v1/systemone`，Kev 协议） |
 | `JULIA_TIMEOUT` | `5` | julia 超时（秒） |
 | `DECIDER_URL` | *（空 = 禁用）* | 备胎决策端点（OpenAI chat/completions） |
-| `DECIDER_MODEL` | `decider-0.8b` | 备胎决策模型名 |
+| `DECIDER_MODEL` | `d3-lite` | 备胎决策模型名 |
 | `DECIDER_TIMEOUT` | `10` | 备胎超时（秒） |
 | `KEV_URL` | `http://192.168.1.10:8905/v1/systemone` | KEV-4B legacy 地址；**置空即整条 Kev 路径禁用** |
 | `BACKEND_CHAT` | `http://192.168.1.20:8731/v1/chat/completions` | 后端 chat 端点 |
